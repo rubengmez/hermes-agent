@@ -1,0 +1,81 @@
+# Compila Hermes Desktop para Windows y deja el ejecutable portable como artefacto.
+# Trigger manual (Actions > "Compilar Desktop Windows") y opcionalmente en push de tags "v*".
+#
+# Pega este fichero en tu repositorio (fork o tuyo) como:
+#   .github/workflows/hermes-desktop-windows.yml
+#
+# No modifica Hermes Agent ni instala nada en la máquina: compila SOLO la GUI
+# (apps/desktop) en un runner de GitHub y sube el resultado para descargar.
+
+name: Hermes Desktop Windows (portable)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-desktop-win-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-desktop-win:
+    name: Build Hermes Desktop (win x64)
+    # Runner nativo de Windows: la dist de Electron local ya es la correcta.
+    # Desde Linux (compilación cruzada) falla por node-pty/get-windows nativos;
+    # en windows-latest eso no ocurre.
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Node ─────────────────────────────────────────────────────────
+      # Misma versión que usa el CI oficial de Nous (setup-node node-version 26,
+      # npm en la línea 12).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Alinear npm a la línea 12 (igual que el CI oficial)
+        run: |
+          npm --version | Select-String '^12\.' -Quiet
+          if (-not $LASTEXITCODE) { npm i -g npm@12 }
+
+      # ── Dependencias ─────────────────────────────────────────────────
+      # npm ci (no --ignore-scripts): el postinstall de Electron descarga el
+      # binario de Windows y node-pty deja sus prebuilds win32-x64 nativos.
+      - name: Instalar dependencias del workspace
+        run: npm ci
+
+      # ── Compilar SOLO la app de escritorio (GUI, sin agent runtime) ──
+      # `pack` = app desempaquetada portable (release/win-unpacked/Hermes.exe),
+      # sin instalador. Es el artefacto que queremos.
+      - name: Build app de escritorio (pack)
+        working-directory: apps/desktop
+        run: npm run pack
+
+      # ── Empaquetar en un zip para descargar de una pieza ─────────────
+      - name: Comprimir app portable (zip)
+        working-directory: apps/desktop/release
+        run: |
+          Compress-Archive -Path win-unpacked -DestinationPath Hermes-desktop-portable-win-x64.zip -Force
+
+      # ── Subir artefacto ──────────────────────────────────────────────
+      - name: Subir artefacto portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-desktop-portable-win-x64
+          path: apps/desktop/release/Hermes-desktop-portable-win-x64.zip
+          retention-days: 30
+
+      # ── (Opcional) Generar también el instalador NSIS/MSI ────────────
+      - name: Distribución instalable (NSIS/MSI)
+        if: false   # pon "true" en la primera línea para activarlo
+        working-directory: apps/desktop
+        run: npm run dist:win
