@@ -1,17 +1,16 @@
-# Compila Hermes Desktop para Windows y deja el ejecutable portable como artefacto.
-#
-# FUENTE: compila SIEMPRE el upstream de Nous (NousResearch/hermes-agent@main),
-# no el fork. Así queda al día automáticamente sin tener que sincronizar el
-# fork cuando Nous actualice.
+# Compila Hermes Desktop (Windows portable) desde el upstream de Nous y lo
+# publica. Cada ejecución:
+#   1. Baja el código más reciente de NousResearch/hermes-agent@main (siempre
+#      al día, sin tener que sincronizar el fork).
+#   2. Compila SOLO la GUI como "lite client" (sin el agente local).
+#   3. Sube un artefacto de Actions Y publica una GitHub Release versionada.
 #
 # DISPARO:
-#   - manual  (Actions > "Hermes Desktop Windows (portable)" > Run workflow)
-#   - semanal  (cron, UTC) — rebuild automático con la última versión
-#   - en push de tags "v*"
+#   - manual      (Actions > "Hermes Desktop Windows (portable)" > Run workflow)
+#   - semanal     (cron) — rebuild automático con la última versión
+#   - push de tag "v*"
 #
-# No modifica Hermes Agent ni instala nada en la máquina: en el runner se
-# compila SOLO la GUI (apps/desktop) como "lite client" (sin el agente local)
-# y se sube el resultado para descargar.
+# Las Releases se crean en el repo donde corre el workflow (tu fork).
 
 name: Hermes Desktop Windows (portable)
 
@@ -24,7 +23,8 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write          # necesario para publicar la GitHub Release
+  actions: read
 
 concurrency:
   group: hermes-desktop-win
@@ -33,23 +33,19 @@ concurrency:
 jobs:
   build-desktop-win:
     name: Build Hermes Desktop (win x64)
-    # Runner nativo de Windows: la dist de Electron local ya es la correcta.
-    # Desde Linux (compilación cruzada) falla por node-pty/get-windows nativos;
-    # en windows-latest eso no ocurre.
     runs-on: windows-latest
     timeout-minutes: 40
 
     steps:
       # ── Checkout del UPSTREAM de Nous, no del fork ───────────────────
-      # Así cada run usa la última versión publicada de Hermes sin depender
-      # del estado de sincronización de rubengmez/hermes-agent.
+      # El workflow corre en tu fork, pero el código que se compila es el
+      # último de Nous. Así cada release queda al día automáticamente.
       - uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
           ref: main
 
-      # ── Node ─────────────────────────────────────────────────────────
-      # Misma línea que usa el CI oficial de Nous (node 26 + npm 12).
+      # ── Node (solo para COMPILAR en CI; el cliente final no lo usa) ──
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -60,29 +56,48 @@ jobs:
           npm --version | Select-String '^12\.' -Quiet
           if (-not $LASTEXITCODE) { npm i -g npm@12 }
 
-      # ── Dependencias ─────────────────────────────────────────────────
-      # npm ci (no --ignore-scripts): el postinstall de Electron descarga el
-      # binario de Windows y node-pty deja sus prebuilds win32-x64 nativos.
       - name: Instalar dependencias del workspace
         run: npm ci
 
-      # ── Compilar SOLO la app de escritorio (GUI, sin agent runtime) ──
-      # `pack` = app desempaquetada portable (release/win-unpacked/Hermes.exe),
-      # sin instalador. Es el artefacto que queremos.
+      # ── Compilar la app de escritorio (GUI portable, sin agent) ──────
       - name: Build app de escritorio (pack)
         working-directory: apps/desktop
         run: npm run pack
 
-      # ── Empaquetar en un zip para descargar de una pieza ─────────────
+      # ── Empaquetar en un zip ─────────────────────────────────────────
       - name: Comprimir app portable (zip)
+        id: zip
         working-directory: apps/desktop/release
         run: |
           Compress-Archive -Path win-unpacked -DestinationPath Hermes-desktop-portable-win-x64.zip -Force
 
-      # ── Subir artefacto ──────────────────────────────────────────────
+      # ── Artefacto de Actions (descarga rápida, retención 30 días) ────
       - name: Subir artefacto portable
         uses: actions/upload-artifact@v4
         with:
           name: hermes-desktop-portable-win-x64
           path: apps/desktop/release/Hermes-desktop-portable-win-x64.zip
           retention-days: 30
+
+      # ── GitHub Release versionada (descarga estable e ilimitada) ─────
+      # Solo en ejecuciones programadas/manuales (no en tageos v*, que ya
+      # llevarían su propia release).
+      - name: Publicar GitHub Release
+        if: github.event_name != 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: rubengmez/hermes-agent
+          name: "Hermes Desktop portable - win-x64 (${{ github.run_number }})"
+          tag_name: "desktop-portable-${{ github.run_number }}"
+          body: |
+            Build portable (lite client) de Hermes Desktop para Windows x64.
+
+            - **Fuente:** NousResearch/hermes-agent@main (compilado en este run)
+            - **Run:** #${{ github.run_number }}
+            - **Fecha:** ${{ github.event.schedule != '' && 'programado semanal' || github.event_name }}
+            - **Conexión remota:** en la app, Settings → Gateways → Remote gateway, o con `HERMES_DESKTOP_REMOTE_URL`.
+            - **Sin firmar:** SmartScreen puede avisar al abrir (Más información → Ejecutar de todas formas).
+          files: apps/desktop/release/Hermes-desktop-portable-win-x64.zip
+          generate_release_notes: false
+          draft: false
+          prerelease: false
