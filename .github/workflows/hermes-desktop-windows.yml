@@ -1,16 +1,24 @@
 # Compila Hermes Desktop para Windows y deja el ejecutable portable como artefacto.
-# Trigger manual (Actions > "Compilar Desktop Windows") y opcionalmente en push de tags "v*".
 #
-# Pega este fichero en tu repositorio (fork o tuyo) como:
-#   .github/workflows/hermes-desktop-windows.yml
+# FUENTE: compila SIEMPRE el upstream de Nous (NousResearch/hermes-agent@main),
+# no el fork. Así queda al día automáticamente sin tener que sincronizar el
+# fork cuando Nous actualice.
 #
-# No modifica Hermes Agent ni instala nada en la máquina: compila SOLO la GUI
-# (apps/desktop) en un runner de GitHub y sube el resultado para descargar.
+# DISPARO:
+#   - manual  (Actions > "Hermes Desktop Windows (portable)" > Run workflow)
+#   - semanal  (cron, UTC) — rebuild automático con la última versión
+#   - en push de tags "v*"
+#
+# No modifica Hermes Agent ni instala nada en la máquina: en el runner se
+# compila SOLO la GUI (apps/desktop) como "lite client" (sin el agente local)
+# y se sube el resultado para descargar.
 
 name: Hermes Desktop Windows (portable)
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 0'   # cada domingo a las 06:00 UTC
   push:
     tags:
       - 'v*'
@@ -19,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: hermes-desktop-win-${{ github.ref }}
+  group: hermes-desktop-win
   cancel-in-progress: true
 
 jobs:
@@ -32,11 +40,16 @@ jobs:
     timeout-minutes: 40
 
     steps:
+      # ── Checkout del UPSTREAM de Nous, no del fork ───────────────────
+      # Así cada run usa la última versión publicada de Hermes sin depender
+      # del estado de sincronización de rubengmez/hermes-agent.
       - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: main
 
       # ── Node ─────────────────────────────────────────────────────────
-      # Misma versión que usa el CI oficial de Nous (setup-node node-version 26,
-      # npm en la línea 12).
+      # Misma línea que usa el CI oficial de Nous (node 26 + npm 12).
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -73,9 +86,3 @@ jobs:
           name: hermes-desktop-portable-win-x64
           path: apps/desktop/release/Hermes-desktop-portable-win-x64.zip
           retention-days: 30
-
-      # ── (Opcional) Generar también el instalador NSIS/MSI ────────────
-      - name: Distribución instalable (NSIS/MSI)
-        if: false   # pon "true" en la primera línea para activarlo
-        working-directory: apps/desktop
-        run: npm run dist:win
